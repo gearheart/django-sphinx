@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.template import Template, Context
+from xml.sax.saxutils import escape
 
 from django.db import models
 from django.contrib.contenttypes.models import ContentType
@@ -187,5 +188,62 @@ def generate_source_for_models(model_classes, index=None, sphinx_params={}):
     params.update(sphinx_params)
 
     c = Context(params)
-    
+
     return t.render(c)
+
+
+def print_xml_source_for_model(model_class):
+    """Generates an xmlpipe2 source configuration for a model."""
+    t = _get_template('source.conf')
+
+    def _sourcable_field(field):
+        return any((isinstance(field, cls) for cls in [
+            models.CharField, models.TextField, models.IntegerField,
+            models.FloatField, models.ForeignKey, models.BooleanField,
+        ]))
+
+    def _field_declaration(f):
+        cls, name = f.__class__, f.name
+
+        if isinstance(f, models.CharField) or isinstance(f, models.TextField):
+            return '<sphinx:field name="%s" />' % name
+        if isinstance(f, models.BooleanField):
+            return '<sphinx:attr name="%s" type="bool" />' % name
+        if isinstance(f, models.IntegerField) or isinstance(f, models.ForeignKey):
+            return '<sphinx:attr name="%s" type="int" />' % name
+        if isinstance(f, models.FloatField):
+            return '<sphinx:attr name="%s" type="float" />' % name
+        raise Exception('Unsourcable field in _field_declaration in xmlpipe2 source', f)
+
+    def _field_val(f, obj):
+        if isinstance(f, basestring):
+            return getattr(obj, f)()
+        if f.__class__ == models.ForeignKey:
+            return getattr(obj, f.name).id
+
+        val = getattr(obj, f.name)
+        if isinstance(val, basestring):
+            return escape(val)
+        return val
+
+    valid_fields = [f for f in model_class._meta.fields if _sourcable_field(f)]
+    dynamic_fields = model_class.search._kwargs['dynamic_fields']
+
+    print '\n'.join(
+        ['<?xml version="1.0" encoding="utf-8"?>'] +
+        ['<sphinx:docset>'] +
+        ['<sphinx:schema>'] +
+        [_field_declaration(f) for f in valid_fields] +
+        ['<sphinx:field name="%s" />' % field for field in dynamic_fields] +
+        ['</sphinx:schema>']
+    )
+
+    for obj in model_class.objects.all():
+        print '\n'.join(
+            ['<sphinx:document id="%s">' % obj.id] +
+            ['<%s>%s</%s>' % (f.name, _field_val(f, obj), f.name) for f in valid_fields] +
+            ['<%s>%s</%s>' % (f, _field_val(f, obj), f) for f in dynamic_fields] +
+            ['</sphinx:document>']
+        )
+    print "</sphinx:docset>"
+
